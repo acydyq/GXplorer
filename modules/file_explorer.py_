@@ -1,0 +1,190 @@
+import os
+import shutil
+import string
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QMenu, QAction,
+    QMessageBox, QPushButton, QStyledItemDelegate, QInputDialog, QComboBox, QHeaderView
+)
+from PyQt5.QtCore import Qt, QDir
+from PyQt5.QtGui import QCursor, QColor, QPalette
+from PyQt5.QtWidgets import QFileSystemModel
+
+class FileExplorerDelegate(QStyledItemDelegate):
+    """
+    A custom delegate to apply advanced styling to items in the QTreeView.
+    Directories are styled with orange text.
+    """
+    def __init__(self, file_model, parent=None):
+        super().__init__(parent)
+        self.file_model = file_model
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if self.file_model.isDir(index):
+            option.palette.setColor(QPalette.Text, QColor("#FFA500"))  # Orange for folders
+        else:
+            # Files can be styled differently if desired.
+            pass
+
+class FileExplorerPanel(QWidget):
+    def __init__(self, start_path=None, parent=None):
+        super().__init__(parent)
+        self.current_path = start_path if start_path else QDir.rootPath()
+
+        # Main vertical layout: file path bar on top, tree view below.
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        
+        # Create the file path bar layout.
+        self.path_layout = QHBoxLayout()
+        
+        # Drive selection combo box (for Windows drives)
+        self.drive_combo = QComboBox()
+        self.populate_drives()
+        self.drive_combo.currentIndexChanged.connect(self.on_drive_changed)
+        self.path_layout.addWidget(self.drive_combo)
+
+        # QLineEdit for current directory path
+        self.path_edit = QLineEdit()
+        self.path_edit.setText(self.current_path)
+        self.path_edit.returnPressed.connect(self.on_path_entered)
+        self.path_layout.addWidget(self.path_edit)
+
+        # "Go" button to navigate to the entered path.
+        self.go_button = QPushButton("Go")
+        self.go_button.clicked.connect(self.on_path_entered)
+        self.path_layout.addWidget(self.go_button)
+
+        # "Up" button to navigate to the parent directory.
+        self.up_button = QPushButton("Up")
+        self.up_button.clicked.connect(self.go_up)
+        self.path_layout.addWidget(self.up_button)
+
+        self.main_layout.addLayout(self.path_layout)
+        
+        # File system model and tree view.
+        self.model = QFileSystemModel()
+        self.model.setRootPath(QDir.rootPath())
+        self.tree = QTreeView()
+        self.tree.setModel(self.model)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.open_context_menu)
+        self.tree.doubleClicked.connect(self.on_double_click)
+
+        # Ensure the header is visible and set initial column sizing.
+        self.tree.setHeaderHidden(False)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        for i in range(1, self.model.columnCount()):
+            self.tree.header().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+
+        # Apply the custom delegate to the tree view.
+        self.delegate = FileExplorerDelegate(self.model, self.tree)
+        self.tree.setItemDelegate(self.delegate)
+
+        self.main_layout.addWidget(self.tree)
+        
+        # Navigate to the starting path.
+        self.navigate_to_path(self.current_path)
+
+    def populate_drives(self):
+        """Populate the drive selection combo box with available drives (Windows only)."""
+        self.drive_combo.clear()
+        if os.name == 'nt':
+            drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+            self.drive_combo.addItems(drives)
+        else:
+            # For non-Windows systems, default to root.
+            self.drive_combo.addItem("/")
+
+    def on_drive_changed(self):
+        """Navigate to the selected drive's root directory."""
+        drive = self.drive_combo.currentText()
+        if drive:
+            self.navigate_to_path(drive)
+
+    def on_path_entered(self):
+        """Triggered when user enters a path in the QLineEdit."""
+        new_path = self.path_edit.text().strip()
+        self.navigate_to_path(new_path)
+
+    def go_up(self):
+        """Navigate to the parent directory of the current path."""
+        parent_path = os.path.dirname(self.current_path)
+        if parent_path and os.path.exists(parent_path):
+            self.navigate_to_path(parent_path)
+
+    def navigate_to_path(self, path):
+        """Navigate to the given path, updating the view."""
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Error", f"Path does not exist: {path}")
+            return
+        self.current_path = os.path.normpath(path)
+        self.path_edit.setText(self.current_path)
+        self.tree.setRootIndex(self.model.index(self.current_path))
+
+    def open_context_menu(self, position):
+        index = self.tree.indexAt(position)
+        if not index.isValid():
+            return
+        
+        menu = QMenu()
+        open_action = QAction("Open", self)
+        open_action.triggered.connect(lambda: self.open_item(index))
+        menu.addAction(open_action)
+
+        rename_action = QAction("Rename", self)
+        rename_action.triggered.connect(lambda: self.rename_item(index))
+        menu.addAction(rename_action)
+
+        delete_action = QAction("Delete", self)
+        delete_action.triggered.connect(lambda: self.delete_item(index))
+        menu.addAction(delete_action)
+        
+        menu.exec_(QCursor.pos())
+
+    def open_item(self, index):
+        path = self.model.filePath(index)
+        if os.path.isdir(path):
+            self.navigate_to_path(path)
+        else:
+            try:
+                os.startfile(path)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Cannot open file: {str(e)}")
+
+    def rename_item(self, index):
+        path = self.model.filePath(index)
+        base_name = os.path.basename(path)
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=base_name)
+        if ok and new_name.strip():
+            new_path = os.path.join(os.path.dirname(path), new_name.strip())
+            if os.path.exists(new_path):
+                QMessageBox.warning(self, "Error", f"Cannot rename: file/folder already exists.")
+                return
+            try:
+                os.rename(path, new_path)
+                self.navigate_to_path(os.path.dirname(new_path))
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not rename: {e}")
+
+    def delete_item(self, index):
+        path = self.model.filePath(index)
+        reply = QMessageBox.question(self, "Delete", f"Are you sure you want to delete:\n{path}?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
+                QMessageBox.information(self, "Deleted", f"Deleted: {path}")
+                self.navigate_to_path(os.path.dirname(path))
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not delete file/folder: {str(e)}")
+
+    def on_double_click(self, index):
+        path = self.model.filePath(index)
+        if os.path.isdir(path):
+            self.navigate_to_path(path)
+        else:
+            self.open_item(index)
