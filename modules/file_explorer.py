@@ -1,332 +1,185 @@
 import os
-import shutil
-import string
-
-from PyQt5.QtCore import (
-    Qt, QDir, QItemSelection, QItemSelectionModel, QModelIndex
-)
-from PyQt5.QtGui import QColor, QPalette, QPainter, QPen
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QMenu, QAction,
-    QMessageBox, QPushButton, QStyledItemDelegate, QInputDialog, QComboBox,
-    QHeaderView, QFileSystemModel, QStyleOptionViewItem, QStyle
+    QWidget, QVBoxLayout, QHBoxLayout, QTreeView, QComboBox, QLineEdit, QPushButton,
+    QFileSystemModel, QStyledItemDelegate, QStyleOptionViewItem, QStyle, QMenu, QMessageBox
 )
+from PyQt5.QtCore import Qt, QItemSelectionModel
+from PyQt5.QtGui import QColor, QBrush, QPainter
 
-class FileExplorerDelegate(QStyledItemDelegate):
-    """
-    Custom delegate that:
-      - Uses a custom selection model for 'selected' rows
-      - Distinguishes 'focused row' by checking if index == tree.currentIndex()
-      - In paint(), sets the background + text color:
-          Focus + Selected => red text on black
-          Focus only => white text on black
-          Selected only => black text on red
-          Otherwise => default or folder/archive color
-    """
-    def __init__(self, file_model, tree_view, parent=None):
-        super().__init__(parent)
-        self.file_model = file_model
-        self.tree_view = tree_view
-
+# Custom delegate to force correct focus and selection rendering.
+class CustomItemDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
-        """
-        We override paint so we can unify focus/selection logic here.
-        """
-        row = index.row()
-        parent_idx = index.parent()
-        first_col = self.file_model.index(row, 0, parent_idx)
+        """Custom paint function to force correct colors for focus and selection."""
+        view = option.widget  # The QTreeView
+        selection_model = view.selectionModel()
 
-        # Determine if the row is selected in our custom selection model
-        is_selected = (
-            self.tree_view.selection_model is not None
-            and self.tree_view.selection_model.isSelected(first_col)
-        )
+        # Determine focus and selection state
+        is_focused = view.currentIndex().row() == index.row()
+        is_selected = selection_model.isSelected(index) if selection_model else False
 
-        # Determine if this row is in focus (i.e., currentIndex)
-        is_focused = (index == self.tree_view.currentIndex())
+        new_option = QStyleOptionViewItem(option)
 
-        # Decide background + text color
+        # 1. If both Focused & Selected → Red text on Cyan Background
         if is_focused and is_selected:
-            # Focus + Selected => red text on black
-            bg_color = QColor("black")
-            fg_color = QColor("red")
+            painter.fillRect(option.rect, QColor("cyan"))
+            new_option.palette.setColor(new_option.palette.Text, QColor("red"))
+
+        # 2. If only Focused → Black text on Cyan Background
         elif is_focused:
-            # Focus only => white text on black
-            bg_color = QColor("black")
-            fg_color = QColor("white")
+            painter.fillRect(option.rect, QColor("cyan"))
+            new_option.palette.setColor(new_option.palette.Text, QColor("black"))
+
+        # 3. If only Selected → Black text on Red Background
         elif is_selected:
-            # Selected only => black text on red
-            bg_color = QColor("red")
-            fg_color = QColor("black")
-        else:
-            # Not focused, not selected => use folder/archive color or default
-            path = self.file_model.filePath(index)
-            if self.file_model.isDir(index):
-                fg_color = QColor("cyan")
-            else:
-                _, ext = os.path.splitext(path)
-                if ext.lower() in (".zip", ".rar", ".7z", ".tar", ".gz", ".iso"):
-                    fg_color = QColor("violet")
-                else:
-                    fg_color = option.palette.color(QPalette.Text)
-            bg_color = option.palette.color(QPalette.Base)  # typically white or your theme’s color
+            painter.fillRect(option.rect, QColor("red"))
+            new_option.palette.setColor(new_option.palette.Text, QColor("black"))
 
-        # Fill the row background
-        painter.fillRect(option.rect, bg_color)
+        # Paint the default item with the modified options.
+        super().paint(painter, new_option, index)
 
-        # Now paint the text
-        # We'll replicate normal QStyledItemDelegate text painting logic:
-        # but with our chosen foreground color
-        text = index.data(Qt.DisplayRole)
-        if text is None:
-            text = ""
+# Custom file system model for file-type colors.
+class CustomFileSystemModel(QFileSystemModel):
+    def data(self, index, role):
+        if role == Qt.TextAlignmentRole and index.column() == 1:
+            return Qt.AlignLeft | Qt.AlignVCenter
+        elif role == Qt.ForegroundRole:
+            file_path = self.filePath(index)
+            if os.path.isdir(file_path):
+                return QColor("#00FFFF")  # Directories = CYAN
+            extension = os.path.splitext(file_path)[1].lower()
+            # Executables = HOT PINK
+            if extension in ['.exe', '.bat', '.sh']:
+                return QColor("#FF69B4")
+            extension_color = {
+                '.py': "#00BFFF",  # Electric Blue
+                '.txt': "#00FFFF",  # Neon Cyan
+                '.html': "#FF00FF",  # Neon Magenta
+                '.css': "#FF00FF",
+                '.zip': "#8A2BE2",  # Deep Purple
+                '.png': "#FF4500",  # Cyber Orange
+                '.mp4': "#CCFF00",  # Acid Yellow
+                '.pdf': "#FF2400",  # Vibrant Red
+                '.json': "#FF69B4",  # Config files
+            }
+            return QColor(extension_color.get(extension, "#FFA500"))  # Default = BRIGHT ORANGE
+        return super().data(index, role)
 
-        painter.setPen(fg_color)
-
-        # We can do basic text alignment
-        alignment = index.data(Qt.TextAlignmentRole)
-        if alignment is None:
-            alignment = Qt.AlignLeft | Qt.AlignVCenter
-
-        rect = option.rect
-        painter.drawText(rect, alignment, text)
-
-    def sizeHint(self, option, index):
-        """
-        Keep default sizeHint from QStyledItemDelegate, or override if you want bigger row heights.
-        """
-        return super().sizeHint(option, index)
-
-class FileExplorerTree(QTreeView):
-    """
-    - setSelectionMode(QTreeView.NoSelection) so left-click doesn't auto-select
-    - We manage a QItemSelectionModel for toggling selection with space
-    - Arrow keys move focus only
-    """
+# Custom tree view with correct space bar selection and full-row focus
+class CustomTreeView(QTreeView):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSelectionMode(QTreeView.NoSelection)
         self.setFocusPolicy(Qt.StrongFocus)
-        self.setSelectionBehavior(QTreeView.SelectRows)
-        self.setAllColumnsShowFocus(True)
-
-        self.selection_model = None
-
-    def set_custom_selection_model(self, sel_model):
-        self.selection_model = sel_model
-
-    def mousePressEvent(self, event):
-        idx = self.indexAt(event.pos())
-        if idx.isValid():
-            if event.button() == Qt.LeftButton:
-                # Left-click => focus only
-                self.setCurrentIndex(idx)
-                self.setFocus(Qt.MouseFocusReason)
-                super(QTreeView, self).mousePressEvent(event)
-            elif event.button() == Qt.RightButton:
-                # Right-click => focus only, context menu is handled externally
-                self.setCurrentIndex(idx)
-                self.setFocus(Qt.MouseFocusReason)
-                super(QTreeView, self).mousePressEvent(event)
-            else:
-                super().mousePressEvent(event)
-        else:
-            super().mousePressEvent(event)
+        self.setSelectionMode(QTreeView.ExtendedSelection)  # Allow multiple selections.
+        self.setSelectionBehavior(QTreeView.SelectRows)  # Ensure full-row selection.
+        self.setItemDelegate(CustomItemDelegate())  # Apply the custom delegate.
 
     def keyPressEvent(self, event):
-        current = self.currentIndex()
-        if event.key() == Qt.Key_Space and current.isValid():
-            self.toggle_selection(current)
-            event.accept()
-        elif event.key() == Qt.Key_Up:
-            self.move_focus_up(current)
-            event.accept()
-        elif event.key() == Qt.Key_Down:
-            self.move_focus_down(current)
+        """Properly toggle space bar selection across the full row."""
+        if event.key() == Qt.Key_Space:
+            index = self.currentIndex()
+            if index.isValid():
+                sm = self.selectionModel()
+                # Toggle full-row selection
+                if sm.isSelected(index):
+                    sm.select(index, QItemSelectionModel.Deselect | QItemSelectionModel.Rows)
+                else:
+                    sm.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+                self.viewport().update()
             event.accept()
         else:
             super().keyPressEvent(event)
 
-    def toggle_selection(self, index):
-        """Toggle entire row in the custom selection model."""
-        if not self.selection_model:
-            return
-        row = index.row()
-        parent = index.parent()
-        col_count = self.model().columnCount(parent)
-        first_col = self.model().index(row, 0, parent)
-        last_col = self.model().index(row, col_count - 1, parent)
-
-        selection = QItemSelection(first_col, last_col)
-        if self.selection_model.isSelected(first_col):
-            self.selection_model.select(selection, QItemSelectionModel.Deselect)
+    def mousePressEvent(self, event):
+        """Allow right-clicking to toggle selection properly."""
+        index = self.indexAt(event.pos())
+        if event.button() == Qt.RightButton and index.isValid():
+            sm = self.selectionModel()
+            if sm.isSelected(index):
+                sm.select(index, QItemSelectionModel.Deselect | QItemSelectionModel.Rows)
+            else:
+                sm.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+            self.viewport().update()
+            event.accept()
         else:
-            self.selection_model.select(selection, QItemSelectionModel.Select)
+            super().mousePressEvent(event)
 
-        self.viewport().update()
-
-    def move_focus_up(self, current):
-        if current.isValid():
-            up_idx = self.indexAbove(current)
-            if up_idx.isValid():
-                self.setCurrentIndex(up_idx)
-                self.viewport().update()
-
-    def move_focus_down(self, current):
-        if current.isValid():
-            down_idx = self.indexBelow(current)
-            if down_idx.isValid():
-                self.setCurrentIndex(down_idx)
-                self.viewport().update()
-
+# File explorer panel with drive combo, path edit, and our custom tree view.
 class FileExplorerPanel(QWidget):
-    def __init__(self, start_path=None, parent=None):
-        super().__init__(parent)
-        self.current_path = start_path or QDir.rootPath()
+    def __init__(self, start_path):
+        super().__init__()
+        self.current_path = start_path
+        self.init_ui()
 
-        # Path bar
-        self.main_layout = QVBoxLayout()
-        self.setLayout(self.main_layout)
+    def init_ui(self):
+        layout = QVBoxLayout(self)
 
-        self.path_layout = QHBoxLayout()
+        # Drive combo box.
         self.drive_combo = QComboBox()
-        self.populate_drives()
+        self.drive_combo.setFocusPolicy(Qt.NoFocus)
+        import string
+        drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+        self.drive_combo.addItems(drives)
         self.drive_combo.currentIndexChanged.connect(self.on_drive_changed)
-        self.path_layout.addWidget(self.drive_combo)
 
+        # Path edit field.
         self.path_edit = QLineEdit(self.current_path)
+        self.path_edit.setFocusPolicy(Qt.NoFocus)
         self.path_edit.returnPressed.connect(self.on_path_entered)
-        self.path_layout.addWidget(self.path_edit)
 
+        # Go and Up buttons.
         self.go_button = QPushButton("Go")
+        self.go_button.setFocusPolicy(Qt.NoFocus)
         self.go_button.clicked.connect(self.on_path_entered)
-        self.path_layout.addWidget(self.go_button)
 
         self.up_button = QPushButton("Up")
+        self.up_button.setFocusPolicy(Qt.NoFocus)
         self.up_button.clicked.connect(self.go_up)
-        self.path_layout.addWidget(self.up_button)
 
-        self.main_layout.addLayout(self.path_layout)
+        # Layout for controls.
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(self.drive_combo)
+        top_layout.addWidget(self.path_edit)
+        top_layout.addWidget(self.go_button)
+        top_layout.addWidget(self.up_button)
+        layout.addLayout(top_layout)
 
-        # File system + Tree
-        self.model = QFileSystemModel()
-        self.model.setRootPath(QDir.rootPath())
-
-        self.tree = FileExplorerTree()
+        # Tree view with custom model.
+        self.model = CustomFileSystemModel()
+        self.model.setRootPath("")
+        self.tree = CustomTreeView()
         self.tree.setModel(self.model)
+        self.tree.setRootIndex(self.model.index(self.current_path))
+        self.tree.setColumnWidth(0, 300)
+        self.tree.setSortingEnabled(True)
+        layout.addWidget(self.tree)
+        self.setLayout(layout)
+        self.tree.setFocus()  # Ensure tree gets key events.
 
-        # Create custom selection model after setModel
-        self.my_selection_model = QItemSelectionModel(self.model)
-        self.tree.set_custom_selection_model(self.my_selection_model)
-
-        # We do NOT rely on style sheets for selected/focus color.
-        # The delegate's paint method handles everything for consistent logic.
-
-        # If you want a general style sheet for QTreeView, e.g. row heights, do it here
-        # self.tree.setStyleSheet("QTreeView { font-size: 10pt; }")
-
-        self.tree.setHeaderHidden(False)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, self.model.columnCount()):
-            self.tree.header().setSectionResizeMode(col, QHeaderView.ResizeToContents)
-
-        # Our custom delegate
-        self.delegate = FileExplorerDelegate(self.model, self.tree)
-        self.tree.setItemDelegate(self.delegate)
-
-        self.main_layout.addWidget(self.tree)
-
-        self.navigate_to_path(self.current_path)
-
-    def populate_drives(self):
-        self.drive_combo.clear()
-        if os.name == 'nt':
-            drs = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
-            self.drive_combo.addItems(drs)
-        else:
-            self.drive_combo.addItem("/")
-
-    def on_drive_changed(self):
-        drive = self.drive_combo.currentText()
-        if drive:
-            self.navigate_to_path(drive)
+    def on_drive_changed(self, index):
+        drive = self.drive_combo.itemText(index)
+        self.navigate_to_path(drive)
 
     def on_path_entered(self):
-        new_path = self.path_edit.text().strip()
-        self.navigate_to_path(new_path)
+        path = self.path_edit.text()
+        self.navigate_to_path(path)
 
     def go_up(self):
         parent_dir = os.path.dirname(self.current_path)
-        if parent_dir and os.path.exists(parent_dir):
+        if parent_dir:
             self.navigate_to_path(parent_dir)
 
     def navigate_to_path(self, path):
-        if not os.path.exists(path):
-            QMessageBox.warning(self, "Error", f"Path does not exist:\n{path}")
-            return
-        self.current_path = os.path.normpath(path)
-        self.path_edit.setText(self.current_path)
-        self.tree.setRootIndex(self.model.index(self.current_path))
+        if os.path.exists(path):
+            self.current_path = path
+            self.path_edit.setText(path)
+            self.tree.setRootIndex(self.model.index(path))
 
-    def open_context_menu(self, pos):
-        idx = self.tree.indexAt(pos)
-        if not idx.isValid():
-            return
-
-        menu = QMenu()
-        open_action = QAction("Open", self)
-        open_action.triggered.connect(lambda: self.on_double_click(idx))
-        menu.addAction(open_action)
-
-        rename_action = QAction("Rename", self)
-        rename_action.triggered.connect(lambda: self.rename_item(idx))
-        menu.addAction(rename_action)
-
-        delete_action = QAction("Delete", self)
-        delete_action.triggered.connect(lambda: self.delete_item(idx))
-        menu.addAction(delete_action)
-
-        menu.exec_(self.tree.viewport().mapToGlobal(pos))
-
-    def on_double_click(self, index):
-        path = self.model.filePath(index)
-        if os.path.isdir(path):
-            self.navigate_to_path(path)
-        else:
-            try:
-                os.startfile(path)
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Cannot open file:\n{e}")
-
-    def rename_item(self, index):
-        path = self.model.filePath(index)
-        base_name = os.path.basename(path)
-        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=base_name)
-        if ok and new_name.strip():
-            new_path = os.path.join(os.path.dirname(path), new_name.strip())
-            if os.path.exists(new_path):
-                QMessageBox.warning(self, "Error", "Cannot rename: file/folder already exists.")
-                return
-            try:
-                os.rename(path, new_path)
-                self.navigate_to_path(os.path.dirname(new_path))
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Could not rename:\n{e}")
-
-    def delete_item(self, index):
-        path = self.model.filePath(index)
-        ans = QMessageBox.question(
-            self, "Delete",
-            f"Are you sure you want to delete:\n{path}?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
-        if ans == QMessageBox.Yes:
-            try:
-                if os.path.isfile(path):
-                    os.remove(path)
-                else:
-                    shutil.rmtree(path)
-                QMessageBox.information(self, "Deleted", f"Deleted: {path}")
-                self.navigate_to_path(os.path.dirname(path))
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Could not delete:\n{e}")
+    def set_focus_to_first_item(self):
+        def try_set_focus():
+            first_index = self.model.index(0, 0, self.tree.rootIndex())
+            if first_index.isValid():
+                self.tree.setCurrentIndex(first_index)
+                self.tree.setFocus(Qt.OtherFocusReason)
+            else:
+                self.model.directoryLoaded.connect(lambda path: try_set_focus())
+        try_set_focus()

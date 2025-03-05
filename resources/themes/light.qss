@@ -1,0 +1,29 @@
+/* Light Theme QSS */
+QMainWindow, QWidget { 
+    background-color: #ffffff; 
+    color: #000000; 
+}
+QTreeView { 
+    background-color: #f0f0f0; 
+    color: #000000; 
+}
+QPushButton { 
+    background-color: #e0e0e0; 
+    color: #000000; 
+    border: 1px solid #cccccc; 
+    padding: 5px; 
+}
+QPushButton:hover { 
+    background-color: #d0d0d0; 
+}
+QMenuBar { 
+    background-color: #ffffff; 
+    color: #000000; 
+}
+QMenuBar::item:selected { 
+    background-color: #e0e0e0; 
+}
+QComboBox, QLineEdit { 
+    background-color: #f0f0f0; 
+    color: #000000; 
+}

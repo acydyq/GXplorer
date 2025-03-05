@@ -1,30 +1,31 @@
 import sys
 import os
 import shutil
+import json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QSplitter,
     QAction, QFileDialog, QMessageBox, QMenuBar, QVBoxLayout,
     QPushButton, QFrame, QInputDialog
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
-
-# Import custom modules
+from PyQt5.QtCore import Qt, QEvent
 from modules.file_explorer import FileExplorerPanel
 from modules.customization import apply_theme, play_sound
-from modules.ai_integration import AIIntegrationDialog
-from modules.plugin_manager import PluginManager
 
 class GXplorerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GXplorer")
-        self.setGeometry(100, 100, 1200, 800)
+        # Start maximized
+        self.setGeometry(100, 100, 1600, 1200)
         
-        # Track which panel is active (left or right)
         self.active_panel = None
+        self.config_file = "resources/config.json"
+        self.current_theme = "dark"  # Default to dark mode
 
-        # Set up the central widget with a horizontal splitter (dual-pane)
+        # Load config
+        self.load_config()
+
+        # Set up the central widget with a horizontal splitter
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -33,51 +34,39 @@ class GXplorerMainWindow(QMainWindow):
         self.left_panel = FileExplorerPanel(start_path=os.path.expanduser("~"))
         self.right_panel = FileExplorerPanel(start_path=os.path.expanduser("~"))
 
-        # When the user clicks inside a panel, we set that panel as active.
         self.left_panel.tree.clicked.connect(lambda: self.set_active_panel(self.left_panel))
         self.right_panel.tree.clicked.connect(lambda: self.set_active_panel(self.right_panel))
 
         self.splitter.addWidget(self.left_panel)
         self.splitter.addWidget(self.right_panel)
         
-        # Add splitter to the main layout
         main_layout.addWidget(self.splitter)
 
-        # Add a function button bar at the bottom
+        # Function button bar
         self.function_bar = QFrame()
         self.function_bar_layout = QHBoxLayout(self.function_bar)
         self.function_bar_layout.setSpacing(15)
         self.function_bar_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Create function buttons (F3, F4, F5, F6, F7, F8, etc.)
-        # In Total Commander style: F3=View, F4=Edit, F5=Copy, F6=Move, F7=MkDir, F8=Delete
+        self.dark_mode_button = QPushButton("Toggle Dark Mode")
+        self.dark_mode_button.clicked.connect(self.toggle_dark_mode)
+        self.function_bar_layout.addWidget(self.dark_mode_button)
+
+        self.f2_refresh_button = QPushButton("F2 Refresh")
+        self.f2_refresh_button.clicked.connect(self.on_f2_refresh)
         self.f3_view_button = QPushButton("F3 View")
         self.f3_view_button.clicked.connect(self.on_f3_view)
-        
         self.f4_edit_button = QPushButton("F4 Edit")
         self.f4_edit_button.clicked.connect(self.on_f4_edit)
-        
         self.f5_copy_button = QPushButton("F5 Copy")
         self.f5_copy_button.clicked.connect(self.on_f5_copy)
-        
         self.f6_move_button = QPushButton("F6 Move")
         self.f6_move_button.clicked.connect(self.on_f6_move)
-        
         self.f7_mkdir_button = QPushButton("F7 MkDir")
         self.f7_mkdir_button.clicked.connect(self.on_f7_mkdir)
-        
         self.f8_delete_button = QPushButton("F8 Delete")
         self.f8_delete_button.clicked.connect(self.on_f8_delete)
 
-        # (Optional) F2 Refresh
-        self.f2_refresh_button = QPushButton("F2 Refresh")
-        self.f2_refresh_button.clicked.connect(self.on_f2_refresh)
-
-        # Optionally, set icons for each button if you have icons in resources/icons
-        # Example:
-        # self.f3_view_button.setIcon(QIcon(os.path.join("resources", "icons", "view.png")))
-
-        # Add buttons to the layout
         self.function_bar_layout.addWidget(self.f2_refresh_button)
         self.function_bar_layout.addWidget(self.f3_view_button)
         self.function_bar_layout.addWidget(self.f4_edit_button)
@@ -88,262 +77,223 @@ class GXplorerMainWindow(QMainWindow):
 
         main_layout.addWidget(self.function_bar)
 
-        # Set up the menu bar
+        # Set up menus
         self.create_menus()
 
-        # Load plugins
-        self.plugin_manager = PluginManager(self)
-        self.plugin_manager.load_plugins()
+        # Apply initial theme
+        apply_theme(self, self.current_theme)
 
-        # Apply Dark Mode by default (defined in resources/themes/dark.qss)
-        apply_theme(self, "dark")
-
-        # Initially set the left panel as active
+        # Set initial focus to the left pane
         self.set_active_panel(self.left_panel)
+        self.left_panel.set_focus_to_first_item()
+
+        # Install global event filter to catch Tab key presses
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Tab:
+            # Clear selections on both panes when switching
+            self.left_panel.tree.selectionModel().clearSelection()
+            self.right_panel.tree.selectionModel().clearSelection()
+            # Switch focus to the opposite pane's first item
+            if self.active_panel == self.left_panel:
+                self.set_active_panel(self.right_panel)
+                self.right_panel.set_focus_to_first_item()
+            else:
+                self.set_active_panel(self.left_panel)
+                self.left_panel.set_focus_to_first_item()
+            return True  # Consume the event
+        return super().eventFilter(source, event)
 
     def create_menus(self):
         menubar = self.menuBar()
-
-        # File Menu
         file_menu = menubar.addMenu("File")
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        # View Menu
         view_menu = menubar.addMenu("View")
         theme_action = QAction("Change Theme", self)
         theme_action.triggered.connect(self.change_theme)
         view_menu.addAction(theme_action)
 
-        # Tools Menu
         tools_menu = menubar.addMenu("Tools")
-        ai_action = QAction("AI Assistant", self)
-        ai_action.triggered.connect(self.open_ai_dialog)
-        tools_menu.addAction(ai_action)
-
-        # Plugins Menu (populated by plugins)
-        self.plugins_menu = menubar.addMenu("Plugins")
-        # Plugins can add their own menu actions by accessing main_window.plugins_menu
-
-        # Help Menu
         help_menu = menubar.addMenu("Help")
         about_action = QAction("About GXplorer", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
 
     def set_active_panel(self, panel):
-        """Set the given FileExplorerPanel as the active panel."""
         self.active_panel = panel
-        # Optionally highlight the active panel visually, or play a sound:
         play_sound("panel_focus")
 
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, "r") as f:
+                    config = json.load(f)
+                    self.current_theme = config.get("theme", "dark")
+            except Exception as e:
+                print(f"Error loading config: {e}")
+
+    def save_config(self):
+        config = {"theme": self.current_theme}
+        try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            with open(self.config_file, "w") as f:
+                json.dump(config, f)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+
+    def toggle_dark_mode(self):
+        self.current_theme = "dark" if self.current_theme != "dark" else "light"
+        apply_theme(self, self.current_theme)
+        self.save_config()
+        play_sound("theme_change")
+
     def change_theme(self):
-        # Let the user pick a .qss file from resources/themes
         theme_file, _ = QFileDialog.getOpenFileName(
             self, "Select Theme",
-            os.path.join("resources", "themes"),
+            "resources/themes",
             "QSS Files (*.qss)"
         )
         if theme_file:
-            # Extract theme name from file name
             theme_name = os.path.splitext(os.path.basename(theme_file))[0]
-            # Apply the theme
-            from modules.customization import apply_theme
+            self.current_theme = theme_name
             apply_theme(self, theme_name, theme_path=theme_file)
+            self.save_config()
             play_sound("theme_change")
             QMessageBox.information(self, "Theme Changed", f"Theme changed to: {theme_name}")
-
-    def open_ai_dialog(self):
-        ai_dialog = AIIntegrationDialog(self)
-        ai_dialog.exec_()
 
     def show_about(self):
         QMessageBox.information(
             self, "About GXplorer",
-            "GXplorer\n\nA highly customizable, dual-pane Windows file explorer inspired by Opera GX and Total Commander."
+            "GXplorer\n\nA highly customizable, dual-pane Windows file explorer."
         )
-
-    # -----------------------
-    # Function Button Actions
-    # -----------------------
 
     def on_f2_refresh(self):
-        """Refresh the active panel."""
-        if not self.active_panel:
-            return
-        current_path = self.active_panel.current_path
-        self.active_panel.navigate_to_path(current_path)
-        play_sound("refresh")
+        if self.active_panel:
+            self.active_panel.navigate_to_path(self.active_panel.current_path)
+            play_sound("refresh")
 
     def on_f3_view(self):
-        """F3: View the selected file(s). Typically opens with default viewer."""
-        if not self.active_panel:
-            return
-        selected_indexes = self.active_panel.tree.selectionModel().selectedIndexes()
-        if not selected_indexes:
-            return
-
-        for index in selected_indexes:
-            path = self.active_panel.model.filePath(index)
-            if os.path.isfile(path):
-                try:
-                    # On Windows, F3 might open the default "view" or just open the file
-                    os.startfile(path)
-                except Exception as e:
-                    QMessageBox.warning(self, "Error", f"Cannot open file: {str(e)}")
-            else:
-                # If it's a folder, let's just navigate
-                self.active_panel.navigate_to_path(path)
-
-        play_sound("open_file")
+        if self.active_panel:
+            selected_indexes = self.active_panel.tree.selectionModel().selectedIndexes()
+            if selected_indexes:
+                for index in selected_indexes:
+                    path = self.active_panel.model.filePath(index)
+                    if os.path.isfile(path):
+                        try:
+                            os.startfile(path)
+                        except Exception as e:
+                            QMessageBox.warning(self, "Error", f"Cannot open file: {str(e)}")
+                    else:
+                        self.active_panel.navigate_to_path(path)
+            play_sound("open_file")
 
     def on_f4_edit(self):
-        """F4: Edit the selected file(s). This might open an editor if configured."""
-        if not self.active_panel:
-            return
-        selected_indexes = self.active_panel.tree.selectionModel().selectedIndexes()
-        if not selected_indexes:
-            return
-
-        for index in selected_indexes:
-            path = self.active_panel.model.filePath(index)
-            if os.path.isfile(path):
-                try:
-                    # Windows trick: pass "edit" verb to open with the default editor
-                    os.startfile(path, "edit")
-                except:
-                    # Fallback to normal open if "edit" verb fails
-                    try:
-                        os.startfile(path)
-                    except Exception as e:
-                        QMessageBox.warning(self, "Error", f"Cannot edit file: {str(e)}")
-            else:
-                self.active_panel.navigate_to_path(path)
-
-        play_sound("open_file")
+        if self.active_panel:
+            selected_indexes = self.active_panel.tree.selectionModel().selectedIndexes()
+            if selected_indexes:
+                for index in selected_indexes:
+                    path = self.active_panel.model.filePath(index)
+                    if os.path.isfile(path):
+                        try:
+                            os.startfile(path, "edit")
+                        except:
+                            try:
+                                os.startfile(path)
+                            except Exception as e:
+                                QMessageBox.warning(self, "Error", f"Cannot edit file: {str(e)}")
+                    else:
+                        self.active_panel.navigate_to_path(path)
+            play_sound("open_file")
 
     def on_f5_copy(self):
-        """F5: Copy selected items from the active panel to the other panel."""
-        if not self.active_panel:
-            return
-
-        # Determine the source panel and the target panel
-        source_panel = self.active_panel
-        target_panel = self.right_panel if source_panel == self.left_panel else self.left_panel
-
-        selected_indexes = source_panel.tree.selectionModel().selectedIndexes()
-        if not selected_indexes:
-            return
-
-        # Only copy distinct file paths (avoid duplicates from multiple column selections)
-        selected_paths = set()
-        for index in selected_indexes:
-            selected_paths.add(source_panel.model.filePath(index))
-
-        dest_dir = target_panel.current_path
-
-        for src in selected_paths:
-            src = os.path.normpath(src)
-            if os.path.isfile(src):
-                try:
-                    shutil.copy2(src, dest_dir)
-                except Exception as e:
-                    QMessageBox.warning(self, "Copy Error", f"Could not copy {src}:\n{e}")
-            elif os.path.isdir(src):
-                try:
-                    base_name = os.path.basename(src)
-                    target_path = os.path.join(dest_dir, base_name)
-                    shutil.copytree(src, target_path)
-                except Exception as e:
-                    QMessageBox.warning(self, "Copy Error", f"Could not copy folder {src}:\n{e}")
-
-        # Refresh both panels
-        source_panel.navigate_to_path(source_panel.current_path)
-        target_panel.navigate_to_path(target_panel.current_path)
-        play_sound("copy")
+        if self.active_panel:
+            source_panel = self.active_panel
+            target_panel = self.right_panel if source_panel == self.left_panel else self.left_panel
+            selected_indexes = source_panel.tree.selectionModel().selectedIndexes()
+            if selected_indexes:
+                selected_paths = set(source_panel.model.filePath(index) for index in selected_indexes)
+                dest_dir = target_panel.current_path
+                for src in selected_paths:
+                    src = os.path.normpath(src)
+                    if os.path.isfile(src):
+                        try:
+                            shutil.copy2(src, dest_dir)
+                        except Exception as e:
+                            QMessageBox.warning(self, "Copy Error", f"Could not copy {src}:\n{e}")
+                    elif os.path.isdir(src):
+                        try:
+                            base_name = os.path.basename(src)
+                            target_path = os.path.join(dest_dir, base_name)
+                            shutil.copytree(src, target_path)
+                        except Exception as e:
+                            QMessageBox.warning(self, "Copy Error", f"Could not copy folder {src}:\n{e}")
+                source_panel.navigate_to_path(source_panel.current_path)
+                target_panel.navigate_to_path(target_panel.current_path)
+                play_sound("copy")
 
     def on_f6_move(self):
-        """F6: Move selected items from the active panel to the other panel."""
-        if not self.active_panel:
-            return
-
-        source_panel = self.active_panel
-        target_panel = self.right_panel if source_panel == self.left_panel else self.left_panel
-
-        selected_indexes = source_panel.tree.selectionModel().selectedIndexes()
-        if not selected_indexes:
-            return
-
-        selected_paths = set()
-        for index in selected_indexes:
-            selected_paths.add(source_panel.model.filePath(index))
-
-        dest_dir = target_panel.current_path
-
-        for src in selected_paths:
-            src = os.path.normpath(src)
-            base_name = os.path.basename(src)
-            target_path = os.path.join(dest_dir, base_name)
-            try:
-                shutil.move(src, target_path)
-            except Exception as e:
-                QMessageBox.warning(self, "Move Error", f"Could not move {src}:\n{e}")
-
-        # Refresh both panels
-        source_panel.navigate_to_path(source_panel.current_path)
-        target_panel.navigate_to_path(target_panel.current_path)
-        play_sound("move")
+        if self.active_panel:
+            source_panel = self.active_panel
+            target_panel = self.right_panel if source_panel == self.left_panel else self.left_panel
+            selected_indexes = source_panel.tree.selectionModel().selectedIndexes()
+            if selected_indexes:
+                selected_paths = set(source_panel.model.filePath(index) for index in selected_indexes)
+                dest_dir = target_panel.current_path
+                for src in selected_paths:
+                    src = os.path.normpath(src)
+                    base_name = os.path.basename(src)
+                    target_path = os.path.join(dest_dir, base_name)
+                    try:
+                        shutil.move(src, target_path)
+                    except Exception as e:
+                        QMessageBox.warning(self, "Move Error", f"Could not move {src}:\n{e}")
+                source_panel.navigate_to_path(source_panel.current_path)
+                target_panel.navigate_to_path(target_panel.current_path)
+                play_sound("move")
 
     def on_f7_mkdir(self):
-        """F7: Create a new folder in the active panel."""
-        if not self.active_panel:
-            return
-        folder_name, ok = QInputDialog.getText(self, "Create Folder", "Enter folder name:")
-        if ok and folder_name.strip():
-            new_folder_path = os.path.join(self.active_panel.current_path, folder_name.strip())
-            try:
-                os.mkdir(new_folder_path)
-                self.active_panel.navigate_to_path(self.active_panel.current_path)
-                play_sound("mkdir")
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Cannot create folder: {e}")
+        if self.active_panel:
+            folder_name, ok = QInputDialog.getText(self, "Create Folder", "Enter folder name:")
+            if ok and folder_name.strip():
+                new_folder_path = os.path.join(self.active_panel.current_path, folder_name.strip())
+                try:
+                    os.mkdir(new_folder_path)
+                    self.active_panel.navigate_to_path(self.active_panel.current_path)
+                    play_sound("mkdir")
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Cannot create folder: {e}")
 
     def on_f8_delete(self):
-        """F8: Delete selected items from the active panel."""
-        if not self.active_panel:
-            return
-        selected_indexes = self.active_panel.tree.selectionModel().selectedIndexes()
-        if not selected_indexes:
-            return
-
-        selected_paths = set()
-        for index in selected_indexes:
-            selected_paths.add(self.active_panel.model.filePath(index))
-
-        confirm = QMessageBox.question(
-            self, "Delete",
-            "Are you sure you want to delete the selected item(s)?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
-        if confirm == QMessageBox.Yes:
-            for path in selected_paths:
-                path = os.path.normpath(path)
-                try:
-                    if os.path.isfile(path):
-                        os.remove(path)
-                    elif os.path.isdir(path):
-                        shutil.rmtree(path)
-                except Exception as e:
-                    QMessageBox.warning(self, "Error", f"Could not delete {path}:\n{e}")
-
-            self.active_panel.navigate_to_path(self.active_panel.current_path)
-            play_sound("delete")
+        if self.active_panel:
+            selected_indexes = self.active_panel.tree.selectionModel().selectedIndexes()
+            if selected_indexes:
+                selected_paths = set(self.active_panel.model.filePath(index) for index in selected_indexes)
+                confirm = QMessageBox.question(
+                    self, "Delete",
+                    "Are you sure you want to delete the selected item(s)?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                )
+                if confirm == QMessageBox.Yes:
+                    for path in selected_paths:
+                        path = os.path.normpath(path)
+                        try:
+                            if os.path.isfile(path):
+                                os.remove(path)
+                            elif os.path.isdir(path):
+                                shutil.rmtree(path)
+                        except Exception as e:
+                            QMessageBox.warning(self, "Error", f"Could not delete {path}:\n{e}")
+                    self.active_panel.navigate_to_path(self.active_panel.current_path)
+                    play_sound("delete")
 
 def main():
     app = QApplication(sys.argv)
     window = GXplorerMainWindow()
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
