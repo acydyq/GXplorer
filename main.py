@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QAction, QFileDialog, QMessageBox, QMenuBar, QVBoxLayout,
     QPushButton, QFrame, QInputDialog
 )
-from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtCore import Qt, QEvent, QUrl
+from PyQt5.QtGui import QDesktopServices
 from modules.file_explorer import FileExplorerPanel
 from modules.customization import apply_theme, play_sound
 
@@ -15,7 +16,6 @@ class GXplorerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GXplorer")
-        # Start maximized
         self.setGeometry(100, 100, 1600, 1200)
         
         self.active_panel = None
@@ -92,10 +92,7 @@ class GXplorerMainWindow(QMainWindow):
 
     def eventFilter(self, source, event):
         if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Tab:
-            # Clear selections on both panes when switching
-            self.left_panel.tree.selectionModel().clearSelection()
-            self.right_panel.tree.selectionModel().clearSelection()
-            # Switch focus to the opposite pane's first item
+            # Switch panels without clearing selections
             if self.active_panel == self.left_panel:
                 self.set_active_panel(self.right_panel)
                 self.right_panel.set_focus_to_first_item()
@@ -124,7 +121,10 @@ class GXplorerMainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def set_active_panel(self, panel):
+        if self.active_panel:
+            self.active_panel.setStyleSheet("")  # Reset style for previous active panel
         self.active_panel = panel
+        self.active_panel.setStyleSheet("border: 2px solid cyan;")
         play_sound("panel_focus")
 
     def load_config(self):
@@ -184,7 +184,7 @@ class GXplorerMainWindow(QMainWindow):
                     path = self.active_panel.model.filePath(index)
                     if os.path.isfile(path):
                         try:
-                            os.startfile(path)
+                            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
                         except Exception as e:
                             QMessageBox.warning(self, "Error", f"Cannot open file: {str(e)}")
                     else:
@@ -199,12 +199,9 @@ class GXplorerMainWindow(QMainWindow):
                     path = self.active_panel.model.filePath(index)
                     if os.path.isfile(path):
                         try:
-                            os.startfile(path, "edit")
-                        except:
-                            try:
-                                os.startfile(path)
-                            except Exception as e:
-                                QMessageBox.warning(self, "Error", f"Cannot edit file: {str(e)}")
+                            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                        except Exception as e:
+                            QMessageBox.warning(self, "Error", f"Cannot open file: {str(e)}")
                     else:
                         self.active_panel.navigate_to_path(path)
             play_sound("open_file")
@@ -219,18 +216,21 @@ class GXplorerMainWindow(QMainWindow):
                 dest_dir = target_panel.current_path
                 for src in selected_paths:
                     src = os.path.normpath(src)
-                    if os.path.isfile(src):
-                        try:
-                            shutil.copy2(src, dest_dir)
-                        except Exception as e:
-                            QMessageBox.warning(self, "Copy Error", f"Could not copy {src}:\n{e}")
-                    elif os.path.isdir(src):
-                        try:
-                            base_name = os.path.basename(src)
-                            target_path = os.path.join(dest_dir, base_name)
+                    base_name = os.path.basename(src)
+                    target_path = os.path.join(dest_dir, base_name)
+                    try:
+                        if os.path.isfile(src):
+                            shutil.copy2(src, target_path)
+                        elif os.path.isdir(src):
                             shutil.copytree(src, target_path)
-                        except Exception as e:
-                            QMessageBox.warning(self, "Copy Error", f"Could not copy folder {src}:\n{e}")
+                    except Exception as e:
+                        reply = QMessageBox.question(
+                            self, "Copy Error",
+                            f"Could not copy {src}:\n{e}\n\nDo you want to skip or cancel?",
+                            QMessageBox.Ignore | QMessageBox.Cancel
+                        )
+                        if reply == QMessageBox.Cancel:
+                            break
                 source_panel.navigate_to_path(source_panel.current_path)
                 target_panel.navigate_to_path(target_panel.current_path)
                 play_sound("copy")
@@ -250,7 +250,13 @@ class GXplorerMainWindow(QMainWindow):
                     try:
                         shutil.move(src, target_path)
                     except Exception as e:
-                        QMessageBox.warning(self, "Move Error", f"Could not move {src}:\n{e}")
+                        reply = QMessageBox.question(
+                            self, "Move Error",
+                            f"Could not move {src}:\n{e}\n\nDo you want to skip or cancel?",
+                            QMessageBox.Ignore | QMessageBox.Cancel
+                        )
+                        if reply == QMessageBox.Cancel:
+                            break
                 source_panel.navigate_to_path(source_panel.current_path)
                 target_panel.navigate_to_path(target_panel.current_path)
                 play_sound("move")
@@ -286,7 +292,13 @@ class GXplorerMainWindow(QMainWindow):
                             elif os.path.isdir(path):
                                 shutil.rmtree(path)
                         except Exception as e:
-                            QMessageBox.warning(self, "Error", f"Could not delete {path}:\n{e}")
+                            reply = QMessageBox.question(
+                                self, "Delete Error",
+                                f"Could not delete {path}:\n{e}\n\nDo you want to skip or cancel?",
+                                QMessageBox.Ignore | QMessageBox.Cancel
+                            )
+                            if reply == QMessageBox.Cancel:
+                                break
                     self.active_panel.navigate_to_path(self.active_panel.current_path)
                     play_sound("delete")
 
