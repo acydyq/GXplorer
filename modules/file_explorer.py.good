@@ -4,9 +4,10 @@ from PyQt5.QtWidgets import (
     QFileSystemModel, QMessageBox
 )
 from PyQt5.QtCore import Qt, QItemSelectionModel, QSortFilterProxyModel
+from PyQt5.QtGui import QPalette, QColor
 
 class CustomTreeView(QTreeView):
-    """Custom tree view with right-click and space bar selection functionality."""
+    """Custom tree view with bright purple selection and auto-clear behavior."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -14,55 +15,57 @@ class CustomTreeView(QTreeView):
         self.setSelectionBehavior(QTreeView.SelectRows)  # Ensure full-row selection
         self.persistent_selection = set()  # Track selections
 
-        # Custom selection styling
-        self.setStyleSheet("""
-            QTreeView::item:selected {
-                background-color: white;
-                color: black;
-            }
-        """)
+        # Set custom selection colors
+        self.selection_palette = self.palette()
+        self.selection_palette.setColor(QPalette.HighlightedText, QColor("#D900D9"))  # Bright purple text
+        self.setPalette(self.selection_palette)
 
-    def contextMenuEvent(self, event):
-        """Right-click to add/remove item from selection."""
+    def mousePressEvent(self, event):
+        """Right-click selection toggling with bright purple text."""
         index = self.indexAt(event.pos())
-        if index.isValid():
+        if event.button() == Qt.RightButton and index.isValid():
+            source_index = self.model().mapToSource(index)
+            file_path = self.model().sourceModel().filePath(source_index)
+
             sm = self.selectionModel()
             if sm.isSelected(index):
                 sm.select(index, QItemSelectionModel.Deselect | QItemSelectionModel.Rows)
-                self.persistent_selection.discard(index)
+                self.persistent_selection.discard(file_path)
             else:
                 sm.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
-                self.persistent_selection.add(index)
-            self.viewport().update()
+                self.persistent_selection.add(file_path)
+
+            self.update_selection_colors()
             event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
-        """Pressing space bar adds/removes an item from selection."""
+        """Pressing space bar toggles selection while maintaining focus."""
         if event.key() == Qt.Key_Space:
             index = self.currentIndex()
             if index.isValid():
+                source_index = self.model().mapToSource(index)
+                file_path = self.model().sourceModel().filePath(source_index)
+
                 sm = self.selectionModel()
                 if sm.isSelected(index):
                     sm.select(index, QItemSelectionModel.Deselect | QItemSelectionModel.Rows)
-                    self.persistent_selection.discard(index)
+                    self.persistent_selection.discard(file_path)
                 else:
                     sm.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
-                    self.persistent_selection.add(index)
-                self.viewport().update()
+                    self.persistent_selection.add(file_path)
+
+                self.update_selection_colors()
                 event.accept()
         else:
             super().keyPressEvent(event)
 
-    def focusInEvent(self, event):
-        """Update the last active panel when this pane gains focus."""
-        super().focusInEvent(event)
-        main_window = self.parent().main_window
-        main_window.last_active_panel = self.parent()  # Set to this panel
-        # Clear selection of the opposite pane
-        if self is main_window.left_panel.tree:
-            main_window.right_panel.tree.clear_selection()
-        else:
-            main_window.left_panel.tree.clear_selection()
+    def update_selection_colors(self):
+        """Apply bright purple text to selected items."""
+        palette = self.palette()
+        palette.setColor(QPalette.HighlightedText, QColor("#D900D9"))  # Bright purple text
+        self.setPalette(palette)
 
     def clear_selection(self):
         """Clears selection when navigating away or switching panes."""
@@ -70,19 +73,14 @@ class CustomTreeView(QTreeView):
         self.selectionModel().clearSelection()
         self.viewport().update()
 
-    def restore_selection(self):
-        """Restore persistent selections when navigating directories."""
-        sm = self.selectionModel()
-        for index in self.persistent_selection:
-            if index.isValid():
-                sm.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
-        self.viewport().update()
+    def get_selected_files(self):
+        """Returns a list of selected file paths for copy operations."""
+        return list(self.persistent_selection)
 
 class FileExplorerPanel(QWidget):
-    """File explorer panel with persistent selection for right-clicked and space-bar items."""
-    def __init__(self, start_path, main_window):
+    """File explorer panel with persistent selection for copy functionality."""
+    def __init__(self, start_path):
         super().__init__()
-        self.main_window = main_window  # Reference to main window
         self.current_path = start_path
         self.init_ui()
 
@@ -129,7 +127,7 @@ class FileExplorerPanel(QWidget):
         self.model.setRootPath("")
         self.proxy_model = QSortFilterProxyModel()
         self.proxy_model.setSourceModel(self.model)
-        self.tree = CustomTreeView(self)
+        self.tree = CustomTreeView()
         self.tree.setModel(self.proxy_model)
         self.tree.setRootIndex(self.proxy_model.mapFromSource(self.model.index(self.current_path)))
         self.tree.setColumnWidth(0, 300)
@@ -138,42 +136,38 @@ class FileExplorerPanel(QWidget):
         self.setLayout(layout)
 
     def on_drive_changed(self, index):
-        """Handles drive selection."""
+        """Handles drive selection and clears selection."""
+        self.tree.clear_selection()
         drive = self.drive_combo.itemText(index)
         self.navigate_to_path(drive)
 
     def on_path_entered(self):
-        """Handles path input changes."""
+        """Handles path input changes and clears selection."""
+        self.tree.clear_selection()
         path = self.path_edit.text()
         self.navigate_to_path(path)
 
     def go_up(self):
-        """Navigates up one directory level."""
+        """Navigates up one directory level and clears selection."""
+        self.tree.clear_selection()
         parent_dir = os.path.dirname(self.current_path)
         if parent_dir:
             self.navigate_to_path(parent_dir)
 
     def navigate_to_path(self, path):
-        """Changes directory in the file explorer."""
+        """Changes directory in the file explorer and clears selection."""
         if os.path.exists(path):
+            self.tree.clear_selection()
             self.current_path = path
             self.path_edit.setText(path)
             source_index = self.model.index(path)
             proxy_index = self.proxy_model.mapFromSource(source_index)
             self.tree.setRootIndex(proxy_index)
-            self.tree.restore_selection()  # Restore right-click and space-bar selections
 
     def on_search_changed(self, text):
         """Filters the displayed files based on search input."""
         self.proxy_model.setFilterFixedString(text)
 
-    def set_focus_to_first_item(self):
-        """Sets focus to the first file in the directory."""
-        def try_set_focus():
-            first_index = self.proxy_model.index(0, 0, self.tree.rootIndex())
-            if first_index.isValid():
-                self.tree.setCurrentIndex(first_index)
-                self.tree.setFocus(Qt.OtherFocusReason)
-            else:
-                self.model.directoryLoaded.connect(lambda p: try_set_focus())
-        try_set_focus()
+    def get_selected_files(self):
+        """Returns a list of selected file paths for copy operations."""
+        return self.tree.get_selected_files()
